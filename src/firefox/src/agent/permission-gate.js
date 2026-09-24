@@ -404,6 +404,8 @@ const TOOL_CAPABILITY = {
   chrome_web_store_publish: Capability.NETWORK,
   schedule_resume: Capability.SCHEDULE,
   schedule_task: Capability.SCHEDULE,
+  // generate_image spends the user's fal.ai credits via a paid network call.
+  generate_image: Capability.NETWORK,
 };
 
 /**

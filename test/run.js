@@ -28662,7 +28662,7 @@ test('getToolsForMode: mode/tier redesign exposes the intended normal and Dev to
     const researchOptions = { researchEscalationEnabled: true };
     assert.equal(getTools('act', { tier: 'compact', ...researchOptions }).length, 25, `[${label}] Compact should expose 25 tools after tab-tool removal`);
     assert.equal(getTools('act', { tier: 'mid', ...researchOptions }).length, 46, `[${label}] Mid should expose 46 tools after chat workflow addition`);
-    assert.equal(getTools('act', researchOptions).length, label === 'chrome' ? 52 : 51, `[${label}] Full tool count should include the chat workflow tools`);
+    assert.equal(getTools('act', researchOptions).length, label === 'chrome' ? 53 : 52, `[${label}] Full tool count should include the chat workflow tools`);
     assert.equal(compact.includes('research_url'), false, `[${label}] Compact must not gain research_url as a tab-tool replacement`);
 
     assert.equal(ask.includes('download_resource_from_page'), false, `[${label}] ask must not expose download_resource_from_page`);
@@ -126033,6 +126033,100 @@ test('public EasyCLIProxy guide keeps executable, account, network, and media bo
   }
   assert.equal(chineseCues[0]?.start, 0.38,
     'docs media: Chinese caption timing should follow the Mandarin narration track');
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// fal.ai generative media (assistive model)
+// ────────────────────────────────────────────────────────────────────────
+
+test('fal-media helpers normalize model ids and extract media URLs across payload shapes', async () => {
+  for (const build of ['chrome', 'firefox']) {
+    const mod = await import(pathToFileURL(path.join(ROOT, `src/${build}/src/agent/fal-media.js`)).href);
+    assert.equal(mod.normalizeFalModelId(' fal-ai/flux/schnell '), 'fal-ai/flux/schnell');
+    assert.equal(mod.normalizeFalModelId(''), '');
+    assert.equal(mod.normalizeFalModelId('../etc'), '', 'path traversal must be rejected');
+    assert.equal(mod.normalizeFalModelId('bad id'), '', 'spaces must be rejected');
+    assert.equal(mod.isImageGenConfigured({ apiKey: 'k', model: 'm' }), true);
+    assert.equal(mod.isImageGenConfigured({ apiKey: 'k', model: '' }), false);
+    assert.equal(mod.extractFalMediaUrl({ images: [{ url: 'https://v3.fal.media/a.png' }] }), 'https://v3.fal.media/a.png');
+    assert.equal(mod.extractFalMediaUrl({ image: { url: 'https://v3.fal.media/b.png' } }), 'https://v3.fal.media/b.png');
+    assert.equal(mod.extractFalMediaUrl({ videos: [{ url: 'https://v3.fal.media/c.mp4' }] }), 'https://v3.fal.media/c.mp4');
+    assert.equal(mod.extractFalMediaUrl({ url: 'https://v3.fal.media/d.webp' }), 'https://v3.fal.media/d.webp');
+    assert.equal(mod.extractFalMediaUrl({ images: [{ url: 'javascript:alert(1)' }] }), '', 'non-https URLs must be rejected');
+    assert.equal(mod.extractFalMediaUrl({}), '');
+  }
+});
+
+test('fal-media queue flow submits, polls, and extracts the result URL', async () => {
+  const mod = await import(pathToFileURL(path.join(ROOT, 'src/chrome/src/agent/fal-media.js')).href);
+  const calls = [];
+  const fakeFetch = async (url, init = {}) => {
+    calls.push({ url, method: init.method || 'GET' });
+    if (init.method === 'POST') {
+      assert.equal(url, 'https://queue.fal.run/fal-ai/flux/schnell');
+      assert.equal(init.headers.Authorization, 'Key test-key');
+      assert.deepEqual(JSON.parse(init.body), { prompt: 'a red apple' });
+      return { ok: true, status: 200, json: async () => ({ status_url: 'https://queue.fal.run/fal-ai/flux/schnell/requests/r1/status', response_url: 'https://queue.fal.run/fal-ai/flux/schnell/requests/r1' }) };
+    }
+    if (url.endsWith('/status')) {
+      const done = calls.filter((c) => c.url.endsWith('/status')).length >= 2;
+      return { ok: true, status: 200, json: async () => ({ status: done ? 'COMPLETED' : 'IN_QUEUE' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ images: [{ url: 'https://v3.fal.media/out.png' }] }) };
+  };
+  const result = await mod.runFalGeneration({ prompt: 'a red apple', config: { apiKey: 'test-key', model: 'fal-ai/flux/schnell' }, fetchImpl: fakeFetch, timeoutMs: 5000 });
+  assert.equal(result.url, 'https://v3.fal.media/out.png');
+  assert.equal(result.model, 'fal-ai/flux/schnell');
+  assert.equal(result.status, 'COMPLETED');
+});
+
+test('fal-media queue flow surfaces failures and invalid submit responses', async () => {
+  const mod = await import(pathToFileURL(path.join(ROOT, 'src/chrome/src/agent/fal-media.js')).href);
+  await assert.rejects(
+    () => mod.runFalGeneration({ prompt: 'x', config: { apiKey: 'k', model: 'bad id' }, fetchImpl: async () => { throw new Error('should not fetch'); } }),
+    /Invalid fal.ai model id/,
+  );
+  await assert.rejects(
+    () => mod.runFalGeneration({ prompt: '  ', config: { apiKey: 'k', model: 'fal-ai/flux/schnell' }, fetchImpl: async () => { throw new Error('should not fetch'); } }),
+    /prompt is required/,
+  );
+  const failFetch = async (url, init = {}) => {
+    if (init.method === 'POST') return { ok: false, status: 401, statusText: 'Unauthorized', text: async () => '{"detail":"invalid key"}' };
+    throw new Error('should not poll after failed submit');
+  };
+  await assert.rejects(
+    () => mod.runFalGeneration({ prompt: 'x', config: { apiKey: 'k', model: 'fal-ai/flux/schnell' }, fetchImpl: failFetch }),
+    /HTTP 401/,
+  );
+});
+
+test('generate_image tool exists in both builds, full tier only, and settings UI wires the assistive model', async () => {
+  for (const build of ['chrome', 'firefox']) {
+    const tools = await import(pathToFileURL(path.join(ROOT, `src/${build}/src/agent/tools.js`)).href);
+    assert.ok(tools.AGENT_TOOL_NAMES.has('generate_image'), `${build}: generate_image should be a registered agent tool`);
+    assert.ok(!tools.ASK_ONLY_TOOLS.includes('generate_image'), `${build}: generate_image must not be available in Ask mode`);
+    assert.ok(!tools.COMPACT_TOOL_NAMES.has('generate_image') && !tools.MID_TOOL_NAMES.has('generate_image'),
+      `${build}: generate_image should stay a full-tier tool`);
+
+    const settingsHtml = fs.readFileSync(path.join(ROOT, `src/${build}/src/ui/settings.html`), 'utf8');
+    for (const id of ['image-gen-api-key', 'image-gen-model', 'btn-save-image-gen', 'btn-test-image-gen', 'btn-clear-image-gen', 'test-image-gen']) {
+      assert.ok(settingsHtml.includes(`id="${id}"`), `${build}: settings.html should contain #${id}`);
+    }
+
+    const settingsJs = fs.readFileSync(path.join(ROOT, `src/${build}/src/ui/settings.js`), 'utf8');
+    assert.ok(settingsJs.includes("'test_image_gen_provider'"), `${build}: settings.js should call the background test handler`);
+    assert.ok(settingsJs.includes("'imageGenModel'"), `${build}: settings.js should persist imageGenModel`);
+
+    const enLocale = fs.readFileSync(path.join(ROOT, `src/${build}/src/ui/locales/en.js`), 'utf8');
+    assert.ok(enLocale.includes("'st.imagegen.heading'"), `${build}: en.js should define st.imagegen.heading`);
+
+    const background = fs.readFileSync(path.join(ROOT, `src/${build}/src/background.js`), 'utf8');
+    assert.ok(background.includes("case 'test_image_gen_provider'"), `${build}: background.js should route test_image_gen_provider`);
+    assert.ok(background.includes("from './agent/fal-media.js'"), `${build}: background.js should import fal-media.js`);
+
+    const agentJs = fs.readFileSync(path.join(ROOT, `src/${build}/src/agent/agent.js`), 'utf8');
+    assert.ok(agentJs.includes("name === 'generate_image'"), `${build}: agent.js should dispatch generate_image`);
+  }
 });
 
 await run();

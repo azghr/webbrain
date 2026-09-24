@@ -419,6 +419,8 @@ const TOOL_CAPABILITY = {
   download_social_media: Capability.DOWNLOAD,
   schedule_resume: Capability.SCHEDULE,
   schedule_task: Capability.SCHEDULE,
+  // generate_image spends the user's fal.ai credits via a paid network call.
+  generate_image: Capability.NETWORK,
 };
 
 /**
