@@ -264,6 +264,21 @@ export function isNewOpenAIContractConfig(config = {}) {
   return isNewOpenAIContractModel(config.model);
 }
 
+/**
+ * Supported GPT-6 models use Chat Completions with `max_tokens`, but reject an
+ * explicit temperature. Keep this separate from the GPT-5/o-series contract,
+ * whose token-field migration is different.
+ */
+export function requiresOpenAIDefaultTemperature(config = {}) {
+  if (isNewOpenAIContractConfig(config)) return true;
+  const providerName = clean(config.providerName);
+  const model = clean(config.model);
+  if (providerName === 'openrouter') {
+    return /(?:^|\/)openai\/gpt-6-(?:luna-pro|sol|astra)(?:$|[-_.\/:])/.test(model);
+  }
+  return isOfficialOpenAIConfig(config) && /^gpt-6-(?:luna-pro|sol|astra)(?:$|[-_.:])/.test(model);
+}
+
 export function supportsOpenAIAskStreaming(config = {}) {
   if (!isOfficialOpenAIConfig(config)) return false;
 
@@ -274,6 +289,7 @@ export function supportsOpenAIAskStreaming(config = {}) {
   if (shouldUseOpenAIResponsesApi(config)) return true;
 
   return [
+    /^gpt-6-luna-pro(?:$|[-_.:])/,
     /^gpt-5\.5(?:$|-\d{4}-\d{2}-\d{2}$)/,
     /^gpt-5\.4(?:$|-\d{4}-\d{2}-\d{2}$|-(?:mini|nano)(?:$|-\d{4}-\d{2}-\d{2}$))/,
     /^gpt-5\.(?:1|2)(?:$|-\d{4}-\d{2}-\d{2}$)/,

@@ -21917,7 +21917,7 @@ test('sidepanels wire highlighting and heading rendering into fenced Markdown', 
   ]) {
     const panel = fs.readFileSync(path.join(ROOT, panelRel), 'utf8');
     const css = fs.readFileSync(path.join(ROOT, cssRel), 'utf8');
-    assert.match(panel, /import \{ codeFenceLanguage, highlightCode, renderMarkdownHeadings, renderMarkdownTables \} from '\.\/markdown-render\.js';/, `${label}: renderer helpers should be imported`);
+    assert.match(panel, /import \{ codeFenceLanguage, highlightCode, renderMarkdownHeadings, renderMarkdownTables, replaceMarkdownCodeFences \} from '\.\/markdown-render\.js';/, `${label}: renderer helpers should be imported`);
     assert.match(panel, /const lang = codeFenceLanguage\(info\);/, `${label}: fenced code should tolerate metadata after its language token`);
     assert.match(panel, /const highlighted = enhance \? highlightCode\(block\.code, block\.lang\) : escapeHtml\(block\.code\);/, `${label}: completed fenced code should be highlighted by its language while live code stays lightweight`);
     assert.match(panel, /text = renderMarkdownTables\(text\);\s*text = renderMarkdownHeadings\(text\);/, `${label}: pipe tables must render before headings swallow the following newline`);
@@ -61990,33 +61990,43 @@ test('MCP bridge settings are Chromium-only, live under Advanced, and keep setup
   }
 });
 
-test('Experimental WebMCP is Chrome-only, opt-in, and absent from default model context', async () => {
+test('Experimental WebMCP is Chrome-only, on by default, and present in default model context', async () => {
   const html = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/settings.html'), 'utf8');
   const firefoxHtml = fs.readFileSync(path.join(ROOT, 'src/firefox/src/ui/settings.html'), 'utf8');
   const settings = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/settings.js'), 'utf8');
   const background = fs.readFileSync(path.join(ROOT, 'src/chrome/src/background.js'), 'utf8');
   const locale = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/locales/en.js'), 'utf8');
 
-  assert.match(html, /id="toggle-webmcp"/, 'Chrome Advanced settings should expose the opt-in');
-  assert.doesNotMatch(html, /id="toggle-webmcp"\s+checked/, 'WebMCP must default off');
+  assert.match(html, /id="toggle-webmcp"/, 'Chrome Advanced settings should expose the toggle');
+  assert.match(html, /id="toggle-webmcp"\s+checked/, 'WebMCP must default on');
   assert.doesNotMatch(firefoxHtml, /id="toggle-webmcp"/, 'Firefox should not show an unsupported toggle');
-  assert.match(settings, /webMcpToggle\.checked = stored\.webMcpEnabled === true/, 'setting should load only explicit true');
+  assert.match(settings, /webMcpToggle\.checked = stored\.webMcpEnabled !== false/, 'setting should default on unless explicitly disabled');
   assert.match(settings, /webMcpEnabled:\s*webMcpToggle\.checked/, 'setting should persist changes');
-  assert.match(background, /agent\.setWebMCPEnabled\(stored\.webMcpEnabled === true\)/, 'background should hydrate the default-off gate');
-  assert.match(background, /changes\.webMcpEnabled[\s\S]*agent\.setWebMCPEnabled\(changes\.webMcpEnabled\.newValue === true\)/, 'storage changes should update the live gate');
+  assert.match(background, /agent\.setWebMCPEnabled\(stored\.webMcpEnabled !== false\)/, 'background should hydrate the default-on gate');
+  assert.match(background, /loadWebMCPEnabled\(\)\.catch\(\(\) => \{\s*agent\.setWebMCPEnabled\(false\);/m, 'failed WebMCP preference hydration must fail closed');
+  assert.match(background, /changes\.webMcpEnabled[\s\S]*agent\.setWebMCPEnabled\(changes\.webMcpEnabled\.newValue !== false\)/, 'storage changes should update the live gate');
   assert.match(locale, /'st\.display\.webmcp\.label': 'Experimental WebMCP'/, 'English setting label missing');
-  assert.equal(ConfigTransferCh.DEFAULT_CONFIG_SETTINGS.webMcpEnabled, false, 'Chrome config export should preserve the opt-in default');
-  assert.equal(ConfigTransferFx.DEFAULT_CONFIG_SETTINGS.webMcpEnabled, false, 'Firefox config schema should preserve cross-browser config compatibility');
+  for (const filename of fs.readdirSync(path.join(ROOT, 'src/chrome/src/ui/locales')).filter((name) => name.endsWith('.js'))) {
+    const localized = fs.readFileSync(path.join(ROOT, 'src/chrome/src/ui/locales', filename), 'utf8');
+    assert.doesNotMatch(localized, /["']st\.display\.webmcp\.desc["'][^\n]*(?:off|disabled|关闭|kapalı|вимк|wyłącz|خاموش|tắt|Desactivado|Désactivé|Desativado|выключ|꺼짐|オフ)/i, `${filename}: WebMCP disclosure must reflect the default-on setting`);
+  }
+  assert.equal(ConfigTransferCh.DEFAULT_CONFIG_SETTINGS.webMcpEnabled, true, 'Chrome config export should preserve the default-on value');
+  assert.equal(ConfigTransferFx.DEFAULT_CONFIG_SETTINGS.webMcpEnabled, true, 'Firefox config schema should preserve cross-browser config compatibility');
 
   const originalDisableAll = cdpClientCh.disableAllWebMCP;
   let cleanupCalls = 0;
   cdpClientCh.disableAllWebMCP = async () => { cleanupCalls++; return 0; };
   try {
     const agent = new AgentCh({});
-    assert.equal(agent.webMcpEnabled, false);
-    assert.doesNotMatch(agent._buildSystemPrompt('ask'), /WEBMCP/i, 'default Ask prompt should not mention WebMCP');
-    assert.equal(getToolsForModeCh('ask', { webMcpAvailable: agent.webMcpEnabled }).some(tool => tool.function.name === 'list_webmcp_tools'), false);
+    assert.equal(agent.webMcpEnabled, false, 'WebMCP should remain disabled until preference hydration succeeds');
+    agent.setWebMCPEnabled(true);
+    assert.match(agent._buildSystemPrompt('ask'), /WEBMCP \(experimental/i, 'default Ask prompt should explain WebMCP');
+    assert.equal(getToolsForModeCh('ask', { webMcpAvailable: agent.webMcpEnabled }).some(tool => tool.function.name === 'list_webmcp_tools'), true);
 
+    agent.setWebMCPEnabled(false);
+    await Promise.resolve();
+    assert.equal(cleanupCalls, 1, 'turning the setting off should close active WebMCP sessions');
+    assert.doesNotMatch(agent._buildSystemPrompt('ask'), /WEBMCP/i, 'disabling should remove prompt guidance again');
     const disabledList = await agent.executeTool(77, 'list_webmcp_tools', {});
     assert.equal(disabledList.featureDisabled, true);
     assert.equal(disabledList.noDispatch, true);
@@ -62026,11 +62036,6 @@ test('Experimental WebMCP is Chrome-only, opt-in, and absent from default model 
     agent.setWebMCPEnabled(true);
     assert.match(agent._buildSystemPrompt('ask'), /WEBMCP \(experimental/i, 'enabled Ask prompt should explain WebMCP');
     assert.equal(getToolsForModeCh('ask', { webMcpAvailable: agent.webMcpEnabled }).some(tool => tool.function.name === 'list_webmcp_tools'), true);
-
-    agent.setWebMCPEnabled(false);
-    await Promise.resolve();
-    assert.equal(cleanupCalls, 1, 'turning the setting off should close active WebMCP sessions');
-    assert.doesNotMatch(agent._buildSystemPrompt('ask'), /WEBMCP/i, 'disabling should remove prompt guidance again');
   } finally {
     cdpClientCh.disableAllWebMCP = originalDisableAll;
   }
@@ -67176,7 +67181,7 @@ test('inferContextWindow: model-aware cloud/router defaults and local 16k fallba
     for (const providerName of ['lmstudio', 'jan', 'vllm', 'sglang', 'localai', 'gpt4all', 'local-openai-proxy']) {
       assert.equal(infer({ category: 'local', providerName, model: 'qwen3.7-plus' }), 16384);
     }
-    for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
+    for (const model of ['gpt-6-luna-pro', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       assert.equal(infer({ category: 'cloud', providerName: 'openai', model }), 1050000);
     }
     assert.equal(infer({ category: 'cloud', providerName: 'openai', model: 'gpt-5.5-pro' }), 1050000);
@@ -71308,8 +71313,29 @@ test('built-in catalog defaults opt into vision when the model name is multimoda
   }
 });
 
-test('OpenAI settings list only the GPT-5.6 family and current dated models', () => {
+test('supported GPT-6 vision capability is mirrored for direct and routed OpenAI models', () => {
+  for (const Provider of [OpenAIProviderCh, OpenAIProviderFx]) {
+    for (const model of ['gpt-6-luna-pro', 'gpt-6-sol', 'gpt-6-astra']) {
+      for (const config of [
+        { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model },
+        { providerName: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: `openai/${model}` },
+      ]) {
+        assert.equal(new Provider(config).supportsVision, true, `${config.model} should receive screenshots`);
+      }
+    }
+    assert.equal(
+      new Provider({ providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-luna' }).supportsVision,
+      false,
+      'unlisted GPT-6 variants must not inherit Luna Pro vision capability',
+    );
+  }
+});
+
+test('OpenAI settings list supported GPT-6 models, the GPT-5.6 family, and current dated models', () => {
   const expectedModels = [
+    'gpt-6-luna-pro',
+    'gpt-6-sol',
+    'gpt-6-astra',
     'gpt-5.6-terra',
     'gpt-5.6-sol',
     'gpt-5.6-luna',
@@ -71330,6 +71356,33 @@ test('OpenAI settings list only the GPT-5.6 family and current dated models', ()
     const suggestions = [...suggestionsMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
     assert.deepEqual(suggestions, expectedModels, `${prefix}: OpenAI model suggestions should match the curated list exactly`);
     assert.match(source, /<option value="__custom__"/, `${prefix}: the model picker should keep the Custom option`);
+  }
+});
+
+test('OpenRouter settings list Claude Opus 5.5', () => {
+  for (const prefix of ['src/chrome', 'src/firefox']) {
+    const source = fs.readFileSync(path.join(ROOT, prefix, 'src/ui/settings.js'), 'utf8');
+    assert.match(
+      source,
+      /openrouter:\s*\{[\s\S]*?suggestions:\s*\[[^\]]*'anthropic\/claude-opus-5\.5'/,
+      `${prefix}: OpenRouter should offer Claude Opus 5.5`,
+    );
+  }
+});
+
+test('OpenRouter Claude Opus 5.5 uses its advertised multimodal legacy contract', () => {
+  for (const Provider of [OpenAIProviderCh, OpenAIProviderFx]) {
+    const provider = new Provider({
+      providerName: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-opus-5.5',
+    });
+    assert.equal(provider.supportsVision, true, 'Claude Opus 5.5 should receive screenshots');
+    assert.equal(provider.contextWindow, 1000000, 'Claude Opus 5.5 should use its 1M context window');
+    const body = provider._buildChatCompletionsBody([], { maxTokens: 123, temperature: 0.2 }, false);
+    assert.equal(body.max_tokens, 123, 'Claude Opus 5.5 should use max_tokens');
+    assert.equal(body.max_completion_tokens, undefined, 'Claude Opus 5.5 must not use max_completion_tokens');
+    assert.equal(body.temperature, 0.2, 'OpenRouter Claude Opus 5.5 should preserve the requested temperature');
   }
 });
 
@@ -71750,6 +71803,7 @@ test('Responses reasoning effort is normalized for GPT-5 Pro model constraints',
 
 test('official OpenAI Ask streaming follows the documented model capability', () => {
   const supportedModels = [
+    'gpt-6-luna-pro',
     'gpt-5.6-terra',
     'gpt-5.5',
     'gpt-5.5-2026-04-23',
@@ -71791,6 +71845,8 @@ test('official OpenAI Ask streaming follows the documented model capability', ()
     for (const config of [
       { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5-pro' },
       { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.5-pro', supportsAskStreaming: true },
+      { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-sol' },
+      { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-6-astra' },
       { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-3.5-turbo' },
       { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4' },
       { providerName: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'o1-mini' },
@@ -73843,7 +73899,7 @@ test('OpenAI-compatible local providers always use legacy request token fields',
   }
 });
 
-test('router-prefixed OpenAI reasoning ids use the advertised Chat Completions contract', () => {
+test('OpenAI reasoning and GPT-6 ids use the advertised Chat Completions contract', () => {
   const messages = [{ role: 'user', content: 'hello' }];
   const newContractModels = ['openai/gpt-5.6-terra', 'openai/gpt-5.6-terra:batch', 'openai/gpt-5.6-terra:image'];
   const legacyContractModels = [
@@ -73868,6 +73924,27 @@ test('router-prefixed OpenAI reasoning ids use the advertised Chat Completions c
     }
     for (const model of legacyContractModels) {
       assert.equal(compatibility.isNewOpenAIContractConfig({ providerName: 'openrouter', model }), false, `${model} should keep the legacy contract`);
+    }
+    for (const model of ['gpt-6-luna-pro', 'gpt-6-sol', 'gpt-6-astra']) {
+      assert.equal(
+        compatibility.requiresOpenAIDefaultTemperature({ providerName: 'openrouter', model: `openai/${model}` }),
+        true,
+        `OpenRouter ${model} should omit temperature`,
+      );
+      assert.equal(
+        compatibility.requiresOpenAIDefaultTemperature({
+          providerName: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model,
+        }),
+        true,
+        `official ${model} should omit temperature`,
+      );
+      assert.equal(
+        compatibility.requiresOpenAIDefaultTemperature({ providerName: 'custom-proxy', model: `openai/${model}` }),
+        false,
+        `a custom proxy must not inherit ${model} temperature behavior`,
+      );
     }
   }
 
@@ -73896,6 +73973,30 @@ test('router-prefixed OpenAI reasoning ids use the advertised Chat Completions c
       assert.equal(body.max_tokens, 123, `${model} should use max_tokens`);
       assert.equal(body.max_completion_tokens, undefined, `${model} must not send max_completion_tokens`);
       assert.equal(body.temperature, 0.7, `${model} should keep the default temperature`);
+    }
+
+    for (const model of ['gpt-6-luna-pro', 'gpt-6-sol', 'gpt-6-astra']) {
+      for (const config of [
+        {
+          label: `OpenRouter ${model}`,
+          providerName: 'openrouter',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: `openai/${model}`,
+        },
+        {
+          label: `official ${model}`,
+          providerName: 'openai',
+          baseUrl: 'https://api.openai.com/v1',
+          model,
+        },
+      ]) {
+      const provider = new Provider(config);
+      assert.equal(provider._isNewOpenAIContract(), false, `${config.label} should keep the Chat Completions token contract`);
+      const body = provider._buildChatCompletionsBody(messages, { maxTokens: 123, temperature: 0.2 }, false);
+      assert.equal(body.max_tokens, 123, `${config.label} should use max_tokens`);
+      assert.equal(body.max_completion_tokens, undefined, `${config.label} must not send max_completion_tokens`);
+      assert.equal(body.temperature, undefined, `${config.label} must omit temperature`);
+      }
     }
 
     // gpt-4.1 accepts both parameter sets; it must stay legacy so explicit
@@ -118142,6 +118243,7 @@ for (const [label, Provider, VertexProvider, AgentClass] of [
 
     for (const model of [
       'claude-opus-5',
+      'claude-opus-5.5',
       'claude-opus-4-8@20260801',
       'claude-sonnet-5@20260801',
       'claude-mythos-preview',
