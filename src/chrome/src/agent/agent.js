@@ -35602,7 +35602,7 @@ If the user has already named or confirmed this exact recipient, do NOT ask agai
       return await fetchUrl(args.url, args, { tabId, signal: executionContext?._contentActionAbortSignal });
     }
     if (name === 'generate_image') {
-      return await generateImage(args);
+      return await generateImage(args, { signal: executionContext?._contentActionAbortSignal });
     }
     if (name === 'read_page_source') {
       return await readPageSource(args.url, args, { tabId, signal: executionContext?._contentActionAbortSignal });

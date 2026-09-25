@@ -32025,7 +32025,7 @@ Rules: no prose intro, no conclusion, no "this screenshot shows...", no layout d
       return await this._restrictedDomainScreenshotFallback(tabId, name, args.url, result);
     }
     if (name === 'generate_image') {
-      return await generateImage(args);
+      return await generateImage(args, { signal: executionContext?._contentActionAbortSignal });
     }
     if (name === 'read_page_source') {
       const result = await readPageSource(args.url, args, { tabId, signal: executionContext?._contentActionAbortSignal });
